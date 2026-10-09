@@ -1,175 +1,246 @@
-<div align="center">
+# 🧭 CareerPilot — AI Resume Analyzer & Job Match Platform
 
-# 🏝️ Smart AI Resume Analyzer 🏝️
+Upload a resume, get it scored like an ATS would score it, rewrite it for a
+specific job description, and pull live job listings that match your
+skills — all from one app.
 
-**Your Intelligent Career Partner**
+This is a real client–server application: a **FastAPI backend** with
+authentication, persistence, and an AI-backed analysis pipeline, and a
+**React frontend** — the kind of architecture you'd actually deploy, not
+just demo locally.
 
-Smart AI Resume Analyzer is an all-in-one tool to analyze, optimize, and craft resumes that stand out, helping you land your dream job.
+---
 
+## ✨ Features
 
-</div>
-
-## 🔗 Helpful Links
-
-- [![AI Models Badge](https://img.shields.io/badge/AI%20Models-Documentation-purple?style=for-the-badge&logo=openai&logoColor=white)](AI_MODELS.md)
-- [![Contribution Guide Badge](https://img.shields.io/badge/Contribution%20Guide-Read%20Here-brightgreen?style=for-the-badge&logo=github&logoColor=white)](.github/CONTRIBUTING.md)
-
-## 🚀 What Makes It Different?
-
-**Next-Level Features for Success:**
-
-1. 🕵️ **Deep Resume Analysis**
-   - 🛡️ ATS Compatibility Score
-   - 🔑 Keyword Gap Analysis
-   - 🧩 Role-specific Feedback
-   - 📊 Skills Gap Breakdown
-
-2. 🎨 **AI-Powered Resume Builder**
-   - Themes that Shine (Modern, Minimal, Professional, Creative)
-   - Smart Content Suggestions
-   - ATS-Optimized Formatting
-   - Customizable Sections
-
-3. 🤖 **AI Optimization Engine**
-   - 💡 Keyword Highlighting
-   - ✍️ Content Enhancement Tips
-   - 🌟 Industry-Specific Insights
-
-**🎉 Why Use Smart Resume AI?**
-Get real-time feedback, boost your resume's impact, and maximize your chances of getting shortlisted — all with a sleek, intuitive interface.
-
-## 🧰 Tech Stack
-
-<details>
-  <summary>🌐 Frontend</summary>
-
-| Technology | Role |
+| Area | What it does |
 |---|---|
-| [Streamlit](https://streamlit.io/) | Builds interactive and user-friendly web apps for resume analysis. |
-| HTML | Provides the basic structure for web pages. |
-| CSS | Adds styling and layouts to the frontend. |
-| JavaScript | Enables interactivity and dynamic behavior for the web pages. |
+| **Auth** | Email/password signup + JWT access/refresh tokens, email verification, and password reset that never leaks whether an email is registered. |
+| **Resume upload** | PDF/DOCX, validated by extension, size cap, and magic-byte signature — a renamed executable can't slip through as a "resume". |
+| **Resume parsing** | Single consolidated pipeline (spaCy + pdfplumber/python-docx) extracting contact info and structured sections. |
+| **AI resume analysis** | Gemini scores the resume 0–100, with an overall assessment, strengths/improvements, section-by-section feedback, bullet-point rewrites, and course recommendations. |
+| **Skill-claim verification** | Every skill Gemini credits is cross-checked locally against the actual resume text with sentence-transformer similarity before it's trusted. |
+| **Deterministic fallback engine** | No `GEMINI_API_KEY`? Analysis still runs — spaCy PhraseMatcher against a ~45-skill taxonomy plus section-completeness/formatting heuristics. Every response reports which `engine` produced it (`"gemini"` or `"heuristic"`). |
+| **Job-match & gap analysis** | Supply a job description alongside the resume and get a match percentage plus a skill-gap breakdown. |
+| **Tailored resume rewrite** | Rewrites the resume for a target job description using only facts already present in the original (never invents employers, titles, or numbers), downloadable as a PDF. |
+| **PDF reports** | Any past analysis can be downloaded as a formatted PDF summary. |
+| **Job search** | Live listings via the Adzuna API. |
+| **Hardening** | Redis-backed sliding-window rate limiting per IP (with automatic in-memory fallback if Redis is down), file-size/type/count limits, structured error handling. |
+| **Tests + CI** | 27-test pytest suite (auth, verification/reset flows, upload validation, tenant isolation, both analysis engines) run automatically via GitHub Actions on every push. |
+| **Containerized** | One `docker compose up` runs Postgres + Redis + API + frontend, all with health checks. |
 
-</details>
+---
 
-<details>
-  <summary>⚙️ Backend</summary>
+## 🏗️ Architecture
 
-| Technology | Role |
-|---|---|
-| [Streamlit](https://streamlit.io/) | Handles backend logic and integrates machine learning models. |
-| [Python](https://www.python.org/) | Core programming language for implementing functionality. |
+```
+┌──────────────────┐        HTTPS/JSON               ┌───────────────────────┐
+│   React SPA       │ ───────────────────────────────▶│   FastAPI backend      │
+│ (Vite, nginx-served)│◀─────────────────────────────  │                        │
+└──────────────────┘        JWT bearer auth           │  ┌──────────────────┐  │
+                                                        │  │ Auth (JWT +      │  │
+                                                        │  │  email verify/   │  │
+                                                        │  │  password reset) │  │
+                                                        │  ├──────────────────┤  │
+                                                        │  │ Resumes API      │  │
+                                                        │  │  → parse         │  │
+                                                        │  │  → AI analyze    │  │
+                                                        │  │  → tailor        │  │
+                                                        │  │  → PDF report    │  │
+                                                        │  ├──────────────────┤  │
+                                                        │  │ Jobs API         │  │
+                                                        │  │  → Adzuna search │  │
+                                                        │  └──────────────────┘  │
+                                                        └──────────┬─────────────┘
+                                                                   │
+                                 ┌─────────────────┬───────────────┼───────────────┐
+                                 ▼                 ▼               ▼               ▼
+                          PostgreSQL         Redis (rate      Gemini API     Adzuna API
+                       (users, resumes,       limiting)     (analysis +      (job listings)
+                          analyses)                          tailoring)
+```
 
-</details>
+**Why these choices, for anyone asking in an interview:**
+- **FastAPI** — async-native, so file upload handling and calls out to
+  Gemini/Adzuna don't block the server, plus free OpenAPI docs at
+  `/api/docs`.
+- **PostgreSQL + Alembic** — real migrations instead of `create_all()`, so
+  schema changes are tracked and reversible like they'd need to be in
+  production.
+- **Redis-backed rate limiting with an in-memory fallback** — protects
+  the API and the (metered) Gemini/Adzuna calls behind it, but a Redis
+  outage degrades to in-process limiting instead of taking the app down.
+- **Gemini for generation, sentence-transformers for verification** — the
+  expensive/paid step (rich analysis + rewriting) is optional and
+  swappable; the free local model's only job is to fact-check the paid
+  model's skill claims against the resume text, so the app is never
+  trusting an LLM's claims about the candidate unverified.
+- **Deterministic fallback engine** — the app has to be honestly
+  demonstrable without an API key: if `GEMINI_API_KEY` is unset (or the
+  call fails), a keyword/skill-taxonomy engine takes over and the response
+  says so via `engine: "heuristic"`, rather than failing silently.
+- **JWT in `sessionStorage`, not `localStorage`** — closing the browser/tab
+  ends the session and requires logging in again; refreshing the page
+  within the same tab keeps you logged in. A deliberate trade-off of
+  convenience for a tighter session lifetime.
 
-<details>
-  <summary>🗄️ Database</summary>
+---
 
-| Technology | Role |
-|---|---|
-| [SQLite3](https://www.sqlite.org/index.html) | Stores and retrieves resume data for efficient processing. |
+## 🚀 Quick start (Docker — recommended)
 
-</details>
+```bash
+git clone <your-repo-url>
+cd careerpilot
 
-<details>
-  <summary>📦 Modules</summary>
+cp backend/.env.example backend/.env
+# edit backend/.env: set a real SECRET_KEY, and (optionally) GEMINI_API_KEY / ADZUNA_APP_ID / ADZUNA_APP_KEY
 
-| Technology | Role |
-|---|---|
-| [spaCy](https://spacy.io/) | NLP for keyword analysis and ATS compatibility checks. |
-| [python-docx](https://python-docx.readthedocs.io/en/latest/) | Word document editing for resume customization. |
-| [PyPDF2](https://pypdf2.readthedocs.io/en/latest/) | Processes PDF files for extracting and analyzing resumes. |
-| [scikit-learn](https://scikit-learn.org/) | Drives machine learning models for resume optimization. |
-| [Plotly](https://plotly.com/) | Interactive charts for skills gap and keyword analysis. |
-| [NLTK](https://www.nltk.org/) | Tokenization, stemming, and text preprocessing. |
-| [openpyxl](https://openpyxl.readthedocs.io/en/stable/) | Reading, writing, and exporting Excel files. |
+docker compose up --build
+```
 
-</details>
+- Frontend: http://localhost
+- Backend docs: http://localhost:8000/api/docs
 
-## 💡 How It Works
+## 🛠️ Local development (without Docker)
 
-1. **Upload or Start from Scratch**
-   Import your resume in PDF/Word or create one from scratch with the AI-powered builder.
+**Backend**
+```bash
+cd backend
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+cp .env.example .env   # set DATABASE_URL, SECRET_KEY, etc.
+alembic revision --autogenerate -m "init"
+alembic upgrade head
+uvicorn app.main:app --reload
+```
 
-2. **Analyze Your Resume**
-   - ATS Compatibility: ensure your resume meets recruiter expectations.
-   - Keyword Insights: find and fill gaps in your content.
-   - Skills Gap Analysis: discover key skills missing for your target role.
+**Frontend**
+```bash
+cd frontend
+npm install
+cp .env.example .env
+npm run dev
+```
 
-3. **Build a Stunning Resume**
-   Select from multiple templates and customize sections like skills, achievements, or hobbies.
+**Run the test suite**
+```bash
+cd backend
+pytest -v
+```
 
-4. **Download & Apply**
-   Export your resume in PDF format, ready for submission.
+27 tests covering: signup/login/duplicate-email/password-hashing, full
+email-verification and password-reset flows (including expired/invalid
+token rejection), resume upload validation (extension, size, magic bytes),
+per-owner resume access isolation, analysis on both the Gemini and
+heuristic paths, tailor-without-API-key behavior, and rate-limiter
+correctness.
 
-## 🛠️ Setup Instructions
+---
 
-Follow the steps below to set up and run **Smart AI Resume Analyzer** on your local machine.
+## 📁 Project structure
 
-1. **Clone the repository:**
+```
+careerpilot/
+├── backend/
+│   ├── app/
+│   │   ├── main.py                  # FastAPI app, middleware, startup
+│   │   ├── api/
+│   │   │   ├── deps.py               # get_db, get_current_user
+│   │   │   └── routes/               # auth.py, resumes.py, jobs.py
+│   │   ├── core/                     # config.py (env settings), security.py (JWT + bcrypt)
+│   │   ├── db/                       # SQLAlchemy session
+│   │   ├── models/                   # User, Resume(+Analysis)
+│   │   ├── schemas/                  # Pydantic request/response models
+│   │   └── services/
+│   │       ├── resume_parser.py      # spaCy + pdfplumber/python-docx extraction
+│   │       ├── analyzer.py           # Gemini scoring + deterministic fallback
+│   │       ├── semantic_matcher.py   # sentence-transformers skill-claim verification
+│   │       ├── skill_matcher.py      # ~45-skill taxonomy, PhraseMatcher
+│   │       ├── resume_tailor.py      # job-specific resume rewriting
+│   │       ├── pdf_report.py         # ReportLab PDF generation
+│   │       ├── job_search.py         # Adzuna API integration
+│   │       ├── file_validation.py    # extension/size/magic-byte checks
+│   │       ├── email_service.py      # verification + reset emails (or console log)
+│   │       └── rate_limiter.py       # Redis sliding window + in-memory fallback
+│   ├── alembic/                       # DB migrations
+│   ├── tests/                         # pytest suite (27 tests)
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   │   ├── api/                       # client.js (axios + JWT refresh interceptor), resources.js
+│   │   ├── context/AuthContext.jsx    # auth state (session-only — see note below)
+│   │   ├── components/                # Navbar, ProtectedRoute
+│   │   └── pages/                     # Home, Login, Signup, VerifyEmail, ForgotPassword,
+│   │                                  # ResetPassword, Dashboard, Upload, ResumeDetail, JobSearch
+│   └── Dockerfile                     # nginx-served production build
+├── .github/workflows/ci.yml           # backend tests (Postgres + Redis service containers) + frontend build
+└── docker-compose.yml                 # Postgres + Redis + API + frontend, with health checks
+```
 
-   ```bash
-   git clone https://github.com/<your-github-username>/Smart-AI-Resume-Analyzer.git
-   cd Smart-AI-Resume-Analyzer
-   ```
+**Stack:** FastAPI, PostgreSQL, SQLAlchemy + Alembic, Redis, JWT auth
+(bcrypt-hashed passwords), Google Gemini (resume analysis + tailoring),
+sentence-transformers (local semantic skill matching), spaCy (parsing +
+keyword fallback), ReportLab (PDF generation), Adzuna API (job search),
+React 18 + Vite, Docker Compose, pytest, GitHub Actions CI.
 
-2. **Create a virtual environment (optional but recommended):**
+---
 
-   ```bash
-   python -m venv venv
-   ```
+## 🔐 Security notes
 
-   Activate it:
-   - Windows: `venv\Scripts\activate`
-   - macOS/Linux: `source venv/bin/activate`
+- Passwords hashed with bcrypt, never stored or logged in plaintext.
+- JWT access + refresh tokens; access tokens are short-lived and stored in
+  `sessionStorage`, not `localStorage`, so closing the tab/browser ends the
+  session.
+- Email verification and password reset use expiring, single-use tokens;
+  the forgot-password flow never reveals whether an email is registered.
+- Every resume/analysis query is scoped to its owner at the ORM level —
+  one user's uploads and results are structurally unreachable by another
+  user.
+- Upload validation: extension allowlist, per-file size cap, and
+  magic-byte signature checking (not just trusting the file extension).
+- Redis-backed rate limiting per IP on auth, upload, and analysis
+  endpoints, with an automatic in-memory fallback if Redis is unreachable.
+- `.env` files are gitignored; `.env.example` documents every variable.
 
-3. **Install dependencies:**
+## 🔑 Getting API keys (both free)
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+- **Gemini** (AI analysis + tailoring): https://aistudio.google.com/apikey
+  — without it, the app automatically falls back to the deterministic
+  keyword-matching engine; nothing breaks, you just get less-rich analysis.
+- **Adzuna** (job search): https://developer.adzuna.com/ — without it, job
+  search returns a clear `503` rather than failing silently.
 
-4. **Download the spaCy model:**
+## ⚙️ CI/CD
 
-   ```bash
-   python -m spacy download en_core_web_sm
-   ```
+`.github/workflows/ci.yml` runs on every push/PR to `main`:
+- **backend-tests**: spins up real Postgres + Redis service containers,
+  installs dependencies, downloads the spaCy model, and runs the full
+  pytest suite. No `GEMINI_API_KEY` is set in CI on purpose — the suite
+  must (and does) pass entirely on the deterministic fallback engine,
+  since a test suite should never depend on a live third-party API call.
+- **frontend-build**: installs and builds the React app.
 
-5. **Configure environment variables (required for AI analysis):**
+If you fork/push this to your own GitHub repo, the workflow runs
+automatically — no extra setup needed beyond having the code in the repo.
 
-   Create a `.env` file inside the `utils/` directory:
+## 📈 What I'd do next (honest roadmap)
 
-   ```env
-   GOOGLE_API_KEY=your_google_gemini_api_key
-   ```
+Good projects name their own limitations — this is what I'd point to if
+asked "what would you improve next":
+- No admin dashboard for platform-wide usage stats.
+- Resume skill-extraction (fallback engine) covers a curated ~45-skill
+  taxonomy; the Gemini path is far more general but costs an API call.
+- `datetime.utcnow()` is used in a few places (flagged as deprecated by
+  Python, not yet removed) — a clean follow-up would be migrating to
+  timezone-aware `datetime.now(UTC)` throughout.
+- Celery + Redis for resume processing at higher upload volume, instead of
+  FastAPI `BackgroundTasks`.
+- Support additional resume formats (e.g. `.rtf`) and multi-language
+  parsing.
 
-   Get a free Gemini API key at [Google AI Studio](https://aistudio.google.com/app/apikey).
-
-   > 🔐 Do not commit your `.env` file to version control — it should be listed in `.gitignore`.
-
-6. **Run the application:**
-
-   ```bash
-   streamlit run app.py
-   ```
-
-## 🔑 Admin Login Credentials (default/demo)
-
-- **Username:** `admin@example.com`
-- **Password:** `admin123`
-
-The Admin Section becomes visible after login, below the Dashboard section. Change these credentials before deploying publicly.
-
-## ☁️ Deploying to Streamlit Community Cloud
-
-1. Push this repository to your own GitHub account.
-2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
-3. Create a new app, pointing to your repo/branch and `app.py` as the entry point.
-4. Add `GOOGLE_API_KEY` as a secret in the app's settings.
-5. Deploy.
+---
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE). See the `LICENSE` file for details.
-
-This project began as an open-source fork and has been substantially customized and extended.
+MIT — see `LICENSE`.
